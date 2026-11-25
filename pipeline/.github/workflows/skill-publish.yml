@@ -1,0 +1,89 @@
+name: skill-publish
+description: >
+  Publish gate for skill repos: full eval matrix + broken-fixture self-test on
+  main, then optional version bump + tag (merge = publish; revert = rollback).
+  Pass version_file (repo-relative JSON file with a "version" key) to enable
+  the bump; omit to gate-only.
+
+on:
+  workflow_call:
+    secrets:
+      OPENROUTER_API_KEY:
+        required: true
+      PROMPTFOO_API_KEY:
+        required: false
+    inputs:
+      version_file:
+        description: 'Repo-relative JSON file whose "version" field is bumped and tagged (e.g. .claude-plugin/plugin.json). Empty = gate only, no release.'
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: skill-publish
+  cancel-in-progress: false
+
+jobs:
+  eval-full-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.promptfoo/cache
+          key: promptfoo-${{ runner.os }}-${{ hashFiles('skills/**', 'evals/**/promptfooconfig.yaml', 'evals/shared/**', 'evals/model-matrix.json') }}
+          restore-keys: promptfoo-${{ runner.os }}-
+
+      # --all = every skill, all models, plus the broken-fixture self-test
+      - name: 'Full gate — runs locally too: bash evals/scripts/gate.sh --all'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PROMPTFOO_API_KEY: ${{ secrets.PROMPTFOO_API_KEY }}
+        run: bash evals/scripts/gate.sh --all
+
+  release:
+    needs: eval-full-matrix
+    if: inputs.version_file != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Bump version and tag
+        env:
+          VERSION_FILE: ${{ inputs.version_file }}
+        run: |
+          TITLE="${{ github.event.head_commit.message }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BUMP=patch
+          case "$TITLE" in *"#major"*) BUMP=major;; *"#minor"*) BUMP=minor;; esac
+          VERSION=$(bun -e "console.log(require('./'+process.env.VERSION_FILE).version)")
+          IFS=. read -r MAJ MIN PAT <<< "$VERSION"
+          case "$BUMP" in
+            major) MAJ=$((MAJ+1)); MIN=0; PAT=0;;
+            minor) MIN=$((MIN+1)); PAT=0;;
+            patch) PAT=$((PAT+1));;
+          esac
+          NEW="$MAJ.$MIN.$PAT"
+
+          bun -e "
+            const fs = require('fs');
+            const p = process.env.VERSION_FILE;
+            const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+            j.version = '$NEW';
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+          "
+          git add "$VERSION_FILE"
+          git commit -m "chore: release v$NEW"
+          git tag "v$NEW"
+          git push -q origin HEAD --tags

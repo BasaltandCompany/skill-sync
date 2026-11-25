@@ -1,0 +1,9 @@
+{
+  "name": "skill-sync",
+  "private": true,
+  "workspaces": ["server", "adapters", "pipeline/cli", "desktop"],
+  "scripts": {
+    "dev": "bun run --filter='*' dev",
+    "test": "bun run --filter='*' test"
+  }
+}

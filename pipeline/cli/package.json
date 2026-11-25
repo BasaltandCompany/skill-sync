@@ -1,0 +1,11 @@
+{
+  "name": "@skill-sync/eval-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "skill-sync-eval": "./src/cli.ts"
+  },
+  "scripts": {
+    "test": "echo 'no unit tests; pipeline runs via gate.sh'"
+  }
+}

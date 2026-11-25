@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+@theme {
+  --color-basalt-950: #0c1116;
+  --color-basalt-900: #141b22;
+  --color-basalt-800: #1d2731;
+  --color-basalt-700: #2a3742;
+  --color-basalt-400: #7d93a5;
+  --color-basalt-200: #c3d0da;
+  --color-basalt-50: #eef3f7;
+  --color-basalt-accent: #4f8ef7;
+}
+
+html, body, #root { height: 100%; }
+body { @apply bg-basalt-950 text-basalt-50 antialiased; }

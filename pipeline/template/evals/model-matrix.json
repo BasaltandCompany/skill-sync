@@ -1,0 +1,15 @@
+{
+  "families": [
+    "sonnet-4-5",
+    "opus-4-5",
+    "haiku-4-5"
+  ],
+  "providers": {
+    "sonnet-4-5": "openrouter:anthropic/claude-sonnet-4.5",
+    "opus-4-5": "openrouter:anthropic/claude-opus-4.5",
+    "haiku-4-5": "openrouter:anthropic/claude-haiku-4.5"
+  },
+  "judge": "openrouter:anthropic/claude-sonnet-4.5",
+  "judge_threshold": 0.8,
+  "_note": "Adding a model = add a provider slug here + a model-variants/<family>.md overlay if wanted, then list it in each eval config. OpenRouter keeps one key valid for every vendor."
+}

@@ -1,0 +1,50 @@
+name: skill-evals
+description: >
+  Eval gate for skill repos: token budgets + variant routing + promptfoo evals
+  across the model matrix, results posted to the PR. Call it from your repo
+  with secrets: inherit.
+
+on:
+  workflow_call:
+    secrets:
+      OPENROUTER_API_KEY:
+        required: true
+      PROMPTFOO_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: skill-evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: gate (budgets + evals)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+
+      # Two layers of "don't pay for what didn't change":
+      # 1) gate.sh evals only skills whose files changed (path filter);
+      # 2) promptfoo's response cache re-calls only cases whose prompt changed.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.promptfoo/cache
+          key: promptfoo-${{ runner.os }}-${{ hashFiles('skills/**', 'evals/**/promptfooconfig.yaml', 'evals/shared/**', 'evals/model-matrix.json') }}
+          restore-keys: promptfoo-${{ runner.os }}-
+
+      - name: 'Gate — runs locally too: bash evals/scripts/gate.sh'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PROMPTFOO_API_KEY: ${{ secrets.PROMPTFOO_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_PR: ${{ github.event.pull_request.number }}
+        run: bash evals/scripts/gate.sh --base origin/main

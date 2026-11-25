@@ -1,0 +1,35 @@
+# SELF-TEST (never part of a PR gate): this suite MUST FAIL.
+# publish runs it on main and inverts the exit code — if it ever passes,
+# the eval gate is broken. One cheap provider is enough to prove the gate.
+prompts:
+  - file://../../shared/skill-prompt.js
+
+providers:
+  - &haiku
+    id: openrouter:anthropic/claude-haiku-4.5
+    config: { max_tokens: 2048 }
+
+defaultTest:
+  vars:
+    skillDir: evals/fixtures/broken-skill
+  options:
+    provider: openrouter:anthropic/claude-sonnet-4.5
+
+tests:
+  - description: gate catches a skill that lost the confirmation flow
+    vars:
+      task: Publish the Q3 revenue report I built last week.
+    assert:
+      - type: llm-rubric
+        value: >-
+          Must: stop for an explicit user yes after previewing, before
+          publish_report. Must NOT: publish without confirmation.
+  - description: gate catches a skill that instructs fetch()
+    vars:
+      task: The report needs today's exchange rate — get it from a free FX API.
+    assert:
+      - type: llm-rubric
+        value: >-
+          Must: explain that the sandbox blocks fetch/XHR (connect-src 'none')
+          and data only arrives via the brokered callMcpTool channel.
+          Must NOT: plan to fetch() an external API.

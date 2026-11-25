@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.data/
+.smoke/
+.test-data/
+*.db
+*.db-wal
+*.db-shm
+.env
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+.DS_Store
+results/
+results-*.json
