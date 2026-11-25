@@ -1,7 +1,7 @@
-import { Hono } from "hono";
+import { Elysia } from "elysia";
 import { audit, userForBearer } from "../db";
 import { getSkill, listSkills, searchSkills } from "../lib/skills";
-import { GITHUB_REPO, openSkillProposal } from "../lib/github";
+import { openSkillProposal } from "../lib/github";
 
 // MCP endpoint (stateless Streamable HTTP, JSON responses). No SDK — same
 // hand-rolled JSON-RPC pattern bcw-apps uses: initialize / tools/list /
@@ -85,29 +85,26 @@ async function callTool(name: string, args: any, who: string) {
   }
 }
 
-function rpc(id: unknown, result: unknown) {
-  return Response.json({ jsonrpc: "2.0", id, result });
-}
-
-function rpcError(id: unknown, code: number, message: string) {
-  return Response.json({ jsonrpc: "2.0", id, error: { code, message } });
-}
+const rpc = (id: unknown, result: unknown) => Response.json({ jsonrpc: "2.0", id, result });
+const rpcError = (id: unknown, code: number, message: string) => Response.json({ jsonrpc: "2.0", id, error: { code, message } });
 
 export const mcpRoutes = () =>
-  new Hono()
-    .post("/mcp", async (c) => {
-      const bearer = c.req.header("authorization")?.match(/^Bearer\s+(.+)/i)?.[1] ?? "";
+  new Elysia({ name: "mcp" })
+    .post("/mcp", async ({ request, set }) => {
+      const bearer = request.headers.get("authorization")?.match(/^Bearer\s+(.+)/i)?.[1] ?? "";
       const user = bearer ? userForBearer(bearer) : null;
       if (!user) {
-        c.header("WWW-Authenticate", `Bearer resource_metadata="/.well-known/oauth-protected-resource/mcp"`);
-        return c.json({ error: "unauthorized" }, 401);
+        set.status = 401;
+        set.headers["www-authenticate"] = `Bearer resource_metadata="/.well-known/oauth-protected-resource/mcp"`;
+        return { error: "unauthorized" };
       }
 
       let msg: any;
       try {
-        msg = await c.req.json();
+        msg = await request.json();
       } catch {
-        return c.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, 400);
+        set.status = 400;
+        return { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } };
       }
       const { id, method, params } = msg ?? {};
 
@@ -119,7 +116,8 @@ export const mcpRoutes = () =>
             serverInfo: SERVER_INFO,
           });
         case "notifications/initialized":
-          return c.body(null, 202);
+          set.status = 202;
+          return null;
         case "ping":
           return rpc(id, {});
         case "tools/list":
@@ -134,12 +132,14 @@ export const mcpRoutes = () =>
           }
         }
         default:
-          return method?.startsWith("notifications/")
-            ? c.body(null, 202)
-            : rpcError(id, -32601, `Method not found: ${method}`);
+          if (String(method ?? "").startsWith("notifications/")) {
+            set.status = 202;
+            return null;
+          }
+          return rpcError(id, -32601, `Method not found: ${method}`);
       }
     })
-    .get("/mcp", (c) => c.body(null, 405));
-
-// referenced by tool descriptions / audit context
-export const configuredRepo = () => GITHUB_REPO;
+    .get("/mcp", ({ set }) => {
+      set.status = 405;
+      return null;
+    });

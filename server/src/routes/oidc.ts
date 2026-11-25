@@ -1,6 +1,7 @@
-import { Hono } from "hono";
+import { Elysia } from "elysia";
 import { createSession, getSessionUser, oidcStates, upsertUser, db, audit } from "../db";
-import { page } from "./oauth";
+import { eq } from "drizzle-orm";
+import { page, redirect } from "./oauth";
 
 // Sign-in with the org account. OIDC when OIDC_ISSUER is configured (Google by
 // default); a dev email fallback when ALLOW_DEV_LOGIN=1 so local runs and
@@ -12,17 +13,24 @@ const OIDC_CLIENT_ID = process.env.OIDC_CLIENT_ID ?? "";
 const OIDC_CLIENT_SECRET = process.env.OIDC_CLIENT_SECRET ?? "";
 const ALLOW_DEV_LOGIN = process.env.ALLOW_DEV_LOGIN === "1";
 
-const b64url = (buf: ArrayBuffer) => Buffer.from(buf).toString("base64url");
 const sha256 = (s: string) => crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+const b64url = (buf: ArrayBuffer) => Buffer.from(buf).toString("base64url");
 
 function sessionCookie(token: string) {
   return `skill_sync_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}`;
 }
 
-function userFromCookie(c: { req: { header: (n: string) => string | undefined } }) {
-  const cookie = c.req.header("cookie") ?? "";
+function userFromCookie(request: Request) {
+  const cookie = request.headers.get("cookie") ?? "";
   const m = /(?:^|;\s*)skill_sync_session=([^;]+)/.exec(cookie);
   return m ? getSessionUser(decodeURIComponent(m[1])) : null;
+}
+
+// Desktop logins come back via a deep link — hand the session token over in
+// the fragment (never sent to any server). Cookie is still set for consent flows.
+function withToken(next: string, token: string) {
+  if (next.startsWith("skill-sync://")) return `${next}#token=${token}`;
+  return next;
 }
 
 async function discovery(issuer: string) {
@@ -32,15 +40,23 @@ async function discovery(issuer: string) {
 }
 
 export const authRoutes = () =>
-  new Hono()
-    .get("/auth/me", (c) => {
-      const user = userFromCookie(c);
-      return user ? c.json({ id: user.id, email: user.email, name: user.name, role: user.role }) : c.json({ error: "unauthenticated" }, 401);
+  new Elysia({ name: "auth" })
+    .get("/auth/me", ({ request, set }) => {
+      const user = userFromCookie(request);
+      if (!user) {
+        set.status = 401;
+        return { error: "unauthenticated" };
+      }
+      return { id: user.id, email: user.email, name: user.name, role: user.role };
     })
-    .post("/auth/logout", (c) => c.header("set-cookie", "skill_sync_session=; Path=/; Max-Age=0").body(null, 204))
+    .post("/auth/logout", ({ set }) => {
+      set.headers["set-cookie"] = "skill_sync_session=; Path=/; Max-Age=0";
+      set.status = 204;
+      return null;
+    })
 
-    .get("/auth/login", async (c) => {
-      const next = c.req.query("next") ?? "/";
+    .get("/auth/login", async ({ request, query }) => {
+      const next = query.next ?? "/";
       if (!OIDC_ISSUER) {
         if (!ALLOW_DEV_LOGIN)
           return page(
@@ -50,7 +66,7 @@ export const authRoutes = () =>
         return page(
           "skill-sync · dev login",
           `<h1>Dev login</h1><form method="post" action="/auth/dev-login"><input name="next" type="hidden" value="${next}">
-<input name="email" placeholder="you@company.com" required style="padding:.4rem;border-radius:6px"><button style="padding:.4rem .8rem;margin-left:.4rem">Sign in</button></form>`
+<input name="email" placeholder="you@company.com" required><button>Sign in</button></form>`
         );
       }
       const d = await discovery(OIDC_ISSUER);
@@ -61,31 +77,37 @@ export const authRoutes = () =>
       const url = new URL(d.authorization_endpoint);
       url.searchParams.set("response_type", "code");
       url.searchParams.set("client_id", OIDC_CLIENT_ID);
-      url.searchParams.set("redirect_uri", `${origin(c.req.raw)}/auth/callback`);
+      url.searchParams.set("redirect_uri", `${origin(request)}/auth/callback`);
       url.searchParams.set("scope", "openid email profile");
       url.searchParams.set("state", state);
       url.searchParams.set("code_challenge", challenge);
       url.searchParams.set("code_challenge_method", "S256");
-      return c.redirect(url.toString());
+      return redirect(url.toString());
     })
 
-    .post("/auth/dev-login", async (c) => {
-      if (!ALLOW_DEV_LOGIN) return c.body(null, 404);
-      const form = await c.req.parseBody();
-      const email = String(form.email ?? "").trim();
-      const next = String(form.next ?? "/");
+    .post("/auth/dev-login", async ({ request, set }) => {
+      if (!ALLOW_DEV_LOGIN) {
+        set.status = 404;
+        return null;
+      }
+      const form: Record<string, string> = {};
+      try {
+        for (const [k, v] of (await request.formData()).entries()) form[k] = String(v);
+      } catch {}
+      const email = (form.email ?? "").trim();
+      const next = form.next ?? "/";
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return page("skill-sync", "<h1>Invalid email</h1>");
       const user = upsertUser(email, email.split("@")[0]);
       const token = createSession(user.id);
       audit(user.email, "session.dev_login");
-      c.header("set-cookie", sessionCookie(token));
-      return c.redirect(withToken(next, token));
+      set.headers["set-cookie"] = sessionCookie(token);
+      return redirect(withToken(next, token));
     })
 
-    .get("/auth/callback", async (c) => {
+    .get("/auth/callback", async ({ request, query, set }) => {
       const d = await discovery(OIDC_ISSUER);
-      const code = c.req.query("code");
-      const state = c.req.query("state") ?? "";
+      const code = query.code;
+      const state = query.state ?? "";
       const row = db.select().from(oidcStates).where(eq(oidcStates.state, state)).get();
       if (!code || !row) return page("skill-sync", "<h1>Sign-in failed</h1><p>Unknown or expired state — try again.</p>");
       db.delete(oidcStates).where(eq(oidcStates.state, state)).run();
@@ -96,7 +118,7 @@ export const authRoutes = () =>
         body: new URLSearchParams({
           grant_type: "authorization_code",
           code,
-          redirect_uri: `${origin(c.req.raw)}/auth/callback`,
+          redirect_uri: `${origin(request)}/auth/callback`,
           client_id: OIDC_CLIENT_ID,
           client_secret: OIDC_CLIENT_SECRET,
           code_verifier: row.verifier,
@@ -117,18 +139,10 @@ export const authRoutes = () =>
       const user = upsertUser(email, (payload.name as string) ?? null);
       const token = createSession(user.id);
       audit(user.email, "session.oidc_login");
-      c.header("set-cookie", sessionCookie(token));
-      return c.redirect(withToken(row.next || "/", token));
+      set.headers["set-cookie"] = sessionCookie(token);
+      return redirect(withToken(row.next || "/", token));
     });
 
 function origin(request: Request) {
   return new URL(request.url).origin;
 }
-
-// Desktop logins come back via a deep link — hand the session token over in
-// the fragment (never sent to any server). Cookie is still set for consent flows.
-function withToken(next: string, token: string) {
-  if (next.startsWith("skill-sync://")) return `${next}#token=${token}`;
-  return next;
-}
-import { eq } from "drizzle-orm";

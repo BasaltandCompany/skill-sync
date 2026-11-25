@@ -1,16 +1,16 @@
-import { Hono } from "hono";
-import { cors } from "hono/cors";
-import { apiRoutes } from "./routes/api";
+import { Elysia } from "elysia";
+import { cors } from "@elysiajs/cors";
+import { oauthRoutes } from "./routes/oauth";
 import { authRoutes } from "./routes/oidc";
 import { mcpRoutes } from "./routes/mcp";
-import { oauthRoutes } from "./routes/oauth";
+import { apiRoutes } from "./routes/api";
 
-// The app without bun.serve, so tests can drive it in-process.
+// The app without bun.serve, so tests can drive it in-process via app.handle().
 // CORS: the desktop webview (tauri://localhost) calls /api + /mcp with an Authorization header.
-export const app = new Hono()
-  .use("*", cors())
-  .get("/", (c) => c.text("skill-sync server"))
-  .route("/", oauthRoutes())
-  .route("/", authRoutes())
-  .route("/", mcpRoutes())
-  .route("/", apiRoutes());
+export const app = new Elysia()
+  .use(cors())
+  .get("/", () => "skill-sync server")
+  .use(oauthRoutes())
+  .use(authRoutes())
+  .use(mcpRoutes())
+  .use(apiRoutes());

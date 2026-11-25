@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Elysia } from "elysia";
 import {
   OAUTH_CODE_TTL_MS,
   consumeAuthCode,
@@ -41,85 +41,90 @@ const metadata = (request: Request) => {
   };
 };
 
-const page = (title: string, body: string) =>
+export const page = (title: string, body: string) =>
   new Response(
     `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title}</title><style>body{font:16px/1.5 -apple-system,system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#111;color:#eee}
-main{max-width:26rem;padding:2rem;background:#1c1c1e;border-radius:12px}h1{font-size:1.1rem}code{background:#2c2c2e;padding:.1rem .3rem;border-radius:4px}
-a.btn{display:inline-block;margin:.5rem .5rem 0 0;padding:.5rem 1.2rem;border-radius:8px;text-decoration:none;color:#fff}
-.allow{background:#0a84ff}.deny{background:#3a3a3c}</style></head>
+<title>${title}</title><style>body{font:16px/1.5 -apple-system,system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#0A0A0A;color:#FAFAFA}
+main{max-width:26rem;padding:2rem;background:#111113;border-radius:0}h1{font-size:1.1rem}code{background:#1A1A1C;padding:.1rem .3rem}
+a.btn{display:inline-block;margin:.5rem .5rem 0 0;padding:.5rem 1.2rem;text-decoration:none;color:#fff}
+.allow{background:#FAFAFA;color:#0A0A0A}.deny{background:#1A1A1C}</style></head>
 <body><main>${body}</main></body></html>`,
     { headers: { "content-type": "text/html; charset=utf-8" } }
   );
 
-function sessionUser(c: { req: any }) {
-  const cookie = c.req.header("cookie") ?? "";
+function sessionFromCookie(request: Request) {
+  const cookie = request.headers.get("cookie") ?? "";
   const m = /(?:^|;\s*)skill_sync_session=([^;]+)/.exec(cookie);
   return m ? getSessionUser(decodeURIComponent(m[1])) : null;
 }
 
+function redirect(to: string, headers?: Record<string, string>) {
+  return new Response(null, { status: 302, headers: { location: to, ...headers } });
+}
+
 export const oauthRoutes = () =>
-  new Hono()
+  new Elysia({ name: "oauth" })
     // RFC 9728 protected-resource metadata. Root + path-aware variant.
-    .get("/.well-known/oauth-protected-resource", (c) =>
-      c.json({ resource: `${origin(c.req.raw)}/mcp`, authorization_servers: [origin(c.req.raw)], scopes_supported: [SCOPE], bearer_methods_supported: ["header"] })
-    )
-    .get("/.well-known/oauth-protected-resource/mcp", (c) =>
-      c.json({ resource: `${origin(c.req.raw)}/mcp`, authorization_servers: [origin(c.req.raw)], scopes_supported: [SCOPE], bearer_methods_supported: ["header"] })
-    )
+    .get("/.well-known/oauth-protected-resource", ({ request }) => {
+      const o = origin(request);
+      return { resource: `${o}/mcp`, authorization_servers: [o], scopes_supported: [SCOPE], bearer_methods_supported: ["header"] };
+    })
+    .get("/.well-known/oauth-protected-resource/mcp", ({ request }) => {
+      const o = origin(request);
+      return { resource: `${o}/mcp`, authorization_servers: [o], scopes_supported: [SCOPE], bearer_methods_supported: ["header"] };
+    })
     // RFC 8414 authorization-server metadata.
-    .get("/.well-known/oauth-authorization-server", (c) => c.json(metadata(c.req.raw)))
+    .get("/.well-known/oauth-authorization-server", ({ request }) => metadata(request))
 
     // Dynamic client registration (RFC 7591). Public PKCE clients only.
-    .post("/register", async (c) => {
+    .post("/register", async ({ request, set }) => {
       let body: { client_name?: string; redirect_uris?: string[] } = {};
       try {
-        body = await c.req.json();
+        body = await request.json();
       } catch {}
       const uris = (body.redirect_uris ?? []).filter((u) => /^https?:\/\//.test(u));
-      if (uris.length === 0)
-        return c.json({ error: "invalid_client_metadata", error_description: "redirect_uris required" }, 400);
+      if (uris.length === 0) {
+        set.status = 400;
+        return { error: "invalid_client_metadata", error_description: "redirect_uris required" };
+      }
       const client_id = createOAuthClient(body.client_name ?? "MCP client", uris);
-      const o = origin(c.req.raw);
-      return c.json(
-        {
-          client_id,
-          client_name: body.client_name ?? "MCP client",
-          redirect_uris: uris,
-          token_endpoint_auth_method: "none",
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-          token_endpoint: `${o}/oauth/token`,
-        },
-        201
-      );
+      const o = origin(request);
+      set.status = 201;
+      return {
+        client_id,
+        client_name: body.client_name ?? "MCP client",
+        redirect_uris: uris,
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        token_endpoint: `${o}/oauth/token`,
+      };
     })
 
-    .get("/authorize", (c) => {
-      const q = c.req.query();
-      const o = origin(c.req.raw);
-      const client = q.client_id ? getOAuthClient(q.client_id) : null;
+    // Authorization endpoint: validate, require a session, show consent page.
+    .get("/authorize", ({ request, query }) => {
+      const o = origin(request);
+      const client = query.client_id ? getOAuthClient(query.client_id) : null;
       if (!client) return page("skill-sync", "<h1>Unknown client</h1><p><code>client_id</code> not registered.</p>");
-      if (!q.redirect_uri || !client.redirect_uris.includes(q.redirect_uri))
+      if (!query.redirect_uri || !client.redirect_uris.includes(query.redirect_uri))
         return page("skill-sync", "<h1>Invalid redirect</h1><p><code>redirect_uri</code> not registered for this client.</p>");
-      if (q.response_type !== "code")
+      if (query.response_type !== "code")
         return page("skill-sync", "<h1>Unsupported</h1><p>Only <code>response_type=code</code> is supported.</p>");
-      if (q.code_challenge_method !== "S256" || !q.code_challenge)
+      if (query.code_challenge_method !== "S256" || !query.code_challenge)
         return page("skill-sync", "<h1>PKCE required</h1><p><code>code_challenge_method=S256</code> is required.</p>");
 
-      const user = sessionUser(c);
+      const user = sessionFromCookie(request);
       if (!user) {
         // Consent requires a signed-in human — that's what attributes the token.
-        const next = encodeURIComponent(c.req.url);
-        return c.redirect(`${o}/auth/login?next=${next}`);
+        return redirect(`${o}/auth/login?next=${encodeURIComponent(request.url)}`);
       }
 
       const id = crypto.randomUUID();
       pending.set(id, {
-        client_id: q.client_id,
-        redirect_uri: q.redirect_uri,
-        code_challenge: q.code_challenge,
-        state: q.state ?? "",
+        client_id: query.client_id!,
+        redirect_uri: query.redirect_uri,
+        code_challenge: query.code_challenge,
+        state: query.state ?? "",
         scope: SCOPE,
         user_id: user.id,
       });
@@ -134,40 +139,53 @@ export const oauthRoutes = () =>
       );
     })
 
-    .get("/authorize/approve", (c) => {
-      const req = pending.get(c.req.query("id") ?? "");
+    .get("/authorize/approve", ({ query }) => {
+      const req = query.id ? pending.get(query.id) : undefined;
       if (!req) return page("skill-sync", "<h1>Expired</h1><p>This approval request is no longer valid — start the connection again.</p>");
-      pending.delete(c.req.query("id")!);
+      pending.delete(query.id!);
       const code = createAuthCode(req.client_id, req.redirect_uri, req.code_challenge, req.scope, req.user_id);
       const sep = req.redirect_uri.includes("?") ? "&" : "?";
-      return c.redirect(`${req.redirect_uri}${sep}code=${code}${req.state ? `&state=${encodeURIComponent(req.state)}` : ""}`);
+      return redirect(`${req.redirect_uri}${sep}code=${code}${req.state ? `&state=${encodeURIComponent(req.state)}` : ""}`);
     })
 
-    .get("/authorize/deny", (c) => {
-      const req = pending.get(c.req.query("id") ?? "");
+    .get("/authorize/deny", ({ query }) => {
+      const req = query.id ? pending.get(query.id) : undefined;
       if (req) {
-        pending.delete(c.req.query("id")!);
+        pending.delete(query.id!);
         const sep = req.redirect_uri.includes("?") ? "&" : "?";
-        return c.redirect(`${req.redirect_uri}${sep}error=access_denied${req.state ? `&state=${encodeURIComponent(req.state)}` : ""}`);
+        return redirect(`${req.redirect_uri}${sep}error=access_denied${req.state ? `&state=${encodeURIComponent(req.state)}` : ""}`);
       }
       return page("skill-sync", "<h1>Expired</h1><p>This request is no longer valid.</p>");
     })
 
     // Token endpoint. PKCE S256: code_verifier must hash to the challenge.
-    .post("/oauth/token", async (c) => {
-      const body = await c.req.parseBody().then((b) => (typeof b === "object" ? b : {}));
+    .post("/oauth/token", async ({ request, set }) => {
       const form: Record<string, string> = {};
-      for (const [k, v] of Object.entries(body)) if (typeof v === "string") form[k] = v;
+      try {
+        for (const [k, v] of (await request.formData()).entries()) form[k] = String(v);
+      } catch {}
 
       if (form.grant_type === "refresh_token") {
-        if (!form.refresh_token || !form.client_id) return c.json({ error: "invalid_request" }, 400);
+        if (!form.refresh_token || !form.client_id) {
+          set.status = 400;
+          return { error: "invalid_request" };
+        }
         const fresh = await rotateRefreshToken(form.refresh_token, form.client_id);
-        if (!fresh) return c.json({ error: "invalid_grant", error_description: "refresh token unknown, revoked, or expired" }, 400);
-        return c.json(fresh);
+        if (!fresh) {
+          set.status = 400;
+          return { error: "invalid_grant", error_description: "refresh token unknown, revoked, or expired" };
+        }
+        return fresh;
       }
-      if (form.grant_type !== "authorization_code") return c.json({ error: "unsupported_grant_type" }, 400);
+      if (form.grant_type !== "authorization_code") {
+        set.status = 400;
+        return { error: "unsupported_grant_type" };
+      }
 
-      const fail = (description: string) => c.json({ error: "invalid_grant", error_description: description }, 400);
+      const fail = (description: string) => {
+        set.status = 400;
+        return { error: "invalid_grant", error_description: description };
+      };
       const row = form.code ? getAuthCode(form.code) : null;
       if (!row) return fail("unknown code");
       if (row.used === 1) return fail("code already used");
@@ -179,7 +197,7 @@ export const oauthRoutes = () =>
       if (Buffer.from(digest).toString("base64url") !== row.codeChallenge) return fail("PKCE verification failed");
 
       consumeAuthCode(form.code);
-      return c.json(issueTokens(row.clientId, row.scope, row.userId));
+      return issueTokens(row.clientId, row.scope, row.userId);
     });
 
-export { SCOPE, sessionUser, page };
+export { SCOPE, sessionFromCookie, redirect };

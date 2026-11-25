@@ -1,15 +1,21 @@
+@import "@fontsource-variable/geist";
 @import "tailwindcss";
+/* ink palette + token mappings — shared with every Basalt product */
+@import "@basaltac/ui/theme.css";
+
+/* @basaltac/ui utilities live outside src/ — without this source, classes
+   used only in the kit are missing from the build */
+@source "./vendor/basaltac-ui/src";
+@source "../node_modules/@basaltac/ui/src";
+
+@import "@fontsource-variable/bodoni-moda/opsz.css";
 
 @theme {
-  --color-basalt-950: #0c1116;
-  --color-basalt-900: #141b22;
-  --color-basalt-800: #1d2731;
-  --color-basalt-700: #2a3742;
-  --color-basalt-400: #7d93a5;
-  --color-basalt-200: #c3d0da;
-  --color-basalt-50: #eef3f7;
-  --color-basalt-accent: #4f8ef7;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-heading: "Bodoni Moda Variable", "Geist Variable", serif;
 }
 
-html, body, #root { height: 100%; }
-body { @apply bg-basalt-950 text-basalt-50 antialiased; }
+body {
+  @apply bg-background text-foreground antialiased;
+  font-family: var(--font-sans);
+}

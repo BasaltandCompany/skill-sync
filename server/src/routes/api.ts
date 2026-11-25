@@ -1,8 +1,8 @@
-import { Hono } from "hono";
+import { Elysia } from "elysia";
 import { audit, userForBearer } from "../db";
 import { getSkill, listSkills, searchSkills } from "../lib/skills";
-import { GITHUB_REPO, listOpenPRs, submitReview } from "../lib/github";
-import { sessionUser } from "./oauth";
+import { listOpenPRs, submitReview } from "../lib/github";
+import { sessionFromCookie } from "./oauth";
 
 type User = { id: string; email: string; name: string | null; role: string };
 
@@ -10,47 +10,51 @@ type User = { id: string; email: string; name: string | null; role: string };
 // is attributed and audited.
 
 export const apiRoutes = () =>
-  new Hono<{ Variables: { user: User } }>().use("/api/*", async (c, next) => {
-    const bearer = c.req.header("authorization")?.match(/^Bearer\s+(.+)/i)?.[1] ?? "";
-    const user = bearer ? userForBearer(bearer) : sessionUser(c);
-    if (!user) return c.json({ error: "unauthenticated" }, 401);
-    c.set("user", user);
-    await next();
-  })
-    .get("/api/me", (c) => {
-      const u = c.get("user");
-      return c.json({ id: u.id, email: u.email, name: u.name, role: u.role });
+  new Elysia({ name: "api" })
+    .derive(async ({ request }) => {
+      const bearer = request.headers.get("authorization")?.match(/^Bearer\s+(.+)/i)?.[1] ?? "";
+      const user: User | null = bearer ? userForBearer(bearer) : sessionFromCookie(request);
+      return { user };
     })
-    .get("/api/config", (c) =>
-      c.json({
-        repo: GITHUB_REPO || null,
-        github_configured: !!process.env.GITHUB_BOT_TOKEN,
-        skills_configured: !!process.env.SKILLS_REPO_URL,
-      })
-    )
-    .get("/api/skills", async (c) => {
-      const q = c.req.query("q");
-      return c.json({ skills: q ? await searchSkills(q) : await listSkills() });
-    })
-    .get("/api/skills/:name", async (c) => {
-      const file = await getSkill(c.req.param("name"), c.req.query("path"));
-      return file ? c.json(file) : c.json({ error: "not found" }, 404);
-    })
-    .get("/api/pulls", async (c) => {
-      try {
-        return c.json({ pulls: await listOpenPRs() });
-      } catch (e: any) {
-        return c.json({ error: String(e?.message ?? e) }, 502);
+    .onBeforeHandle(({ user, set }) => {
+      if (!user) {
+        set.status = 401;
+        return { error: "unauthenticated" };
       }
     })
-    .post("/api/pulls/:number/reviews", async (c) => {
-      const user = c.get("user");
-      const body = await c.req.json<{ event?: string; body?: string }>().catch(() => ({}) as any);
+    .get("/api/me", ({ user }) => ({ id: user!.id, email: user!.email, name: user!.name, role: user!.role }))
+    .get("/api/config", () => ({
+      repo: process.env.SKILLS_REPO_GITHUB ?? null,
+      github_configured: !!process.env.GITHUB_BOT_TOKEN,
+      skills_configured: !!process.env.SKILLS_REPO_URL,
+    }))
+    .get("/api/skills", async ({ query }) => ({
+      skills: query.q ? await searchSkills(query.q) : await listSkills(),
+    }))
+    .get("/api/skills/:name", async ({ params, query, set }) => {
+      const file = await getSkill(params.name, query.path);
+      if (!file) {
+        set.status = 404;
+        return { error: "not found" };
+      }
+      return file;
+    })
+    .get("/api/pulls", async ({ set }) => {
       try {
-        await submitReview(Number(c.req.param("number")), body.event as any, body.body ?? "", user.email);
-        audit(user.email, "skill.review", { pr: Number(c.req.param("number")), event: body.event });
-        return c.json({ ok: true });
+        return { pulls: await listOpenPRs() };
       } catch (e: any) {
-        return c.json({ error: String(e?.message ?? e) }, 502);
+        set.status = 502;
+        return { error: String(e?.message ?? e) };
+      }
+    })
+    .post("/api/pulls/:number/reviews", async ({ params, body, user, set }) => {
+      const b = (body ?? {}) as { event?: string; body?: string };
+      try {
+        await submitReview(Number(params.number), b.event as any, b.body ?? "", user!.email);
+        audit(user!.email, "skill.review", { pr: Number(params.number), event: b.event });
+        return { ok: true };
+      } catch (e: any) {
+        set.status = 502;
+        return { error: String(e?.message ?? e) };
       }
     });
