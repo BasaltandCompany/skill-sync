@@ -1,6 +1,6 @@
 import { createSignal, onSettled, Show } from "solid-js";
+import { isTauri, oauthNext, openExternal } from "./lib/tauri";
 import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Label } from "@basaltac/ui";
 import { getMe, loginUrl, store } from "./lib/api";
 import Library from "./screens/Library";
@@ -34,9 +34,18 @@ export default function App() {
     }
   }
 
+  // Browser dev: the server redirects back to this app's origin with the
+  // token in the fragment — pick it up before anything else.
+  const hashToken = location.hash.match(/token=([^&]+)/)?.[1];
+  if (hashToken) {
+    store.token = decodeURIComponent(hashToken);
+    history.replaceState(null, "", location.pathname);
+  }
+
   onSettled(() => {
     check();
-    // Deep link: skill-sync://oauth/callback#token=...
+    // Deep link: skill-sync://oauth/callback#token=... (Tauri only)
+    if (!isTauri) return; // deep links only exist in the Tauri webview
     let unsub: (() => void) | undefined;
     onOpenUrl((urls) => {
       for (const u of urls) {
@@ -100,9 +109,10 @@ function Login() {
     setBusy(true);
     setError("");
     store.server = server();
-    // Browser completes the OIDC dance; the token lands via deep link.
+    // Browser completes the OIDC dance; the token lands via deep link (Tauri)
+    // or location.hash (browser dev).
     try {
-      await openUrl(loginUrl());
+      await openExternal(loginUrl(oauthNext()));
     } catch (e: any) {
       setError(String(e?.message ?? e));
     } finally {

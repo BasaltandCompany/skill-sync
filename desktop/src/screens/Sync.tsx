@@ -1,5 +1,6 @@
 import { createSignal, For, Show } from "solid-js";
 import { getConfig, getSkillFile, listSkills } from "../lib/api";
+import { isTauri } from "../lib/tauri";
 import { installMcp, syncSkillsToClaudeCode, type AgentId } from "@skill-sync/adapters";
 import { home, tauriFs } from "../lib/tauriFs";
 import { Button } from "@basaltac/ui";
@@ -25,6 +26,10 @@ export default function Sync() {
   getConfig().then((c) => setGithubRepo(c.repo)).catch(() => {});
 
   async function install(agent: AgentId) {
+    if (!isTauri) {
+      setResults((prev) => [`${agent}: file installs need the desktop app (bun run tauri dev)`, ...prev]);
+      return;
+    }
     setBusy(true);
     try {
       const r = await installMcp(agent, {
@@ -41,6 +46,10 @@ export default function Sync() {
   }
 
   async function syncSkills() {
+    if (!isTauri) {
+      setResults((prev) => ["skills: file sync needs the desktop app (bun run tauri dev)", ...prev]);
+      return;
+    }
     setBusy(true);
     try {
       const { skills } = await listSkills();

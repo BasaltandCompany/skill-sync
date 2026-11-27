@@ -47,6 +47,6 @@ export const listPulls = () => api<{ pulls: Pull[] }>("/api/pulls");
 export const reviewPull = (number: number, event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body?: string) =>
   api<{ ok: boolean }>(`/api/pulls/${number}/reviews`, { method: "POST", body: JSON.stringify({ event, body }) });
 
-export function loginUrl() {
-  return `${store.server}/auth/login?next=${encodeURIComponent("skill-sync://oauth/callback")}`;
+export function loginUrl(next: string) {
+  return `${store.server}/auth/login?next=${encodeURIComponent(next)}`;
 }

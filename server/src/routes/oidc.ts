@@ -26,11 +26,24 @@ function userFromCookie(request: Request) {
   return m ? getSessionUser(decodeURIComponent(m[1])) : null;
 }
 
-// Desktop logins come back via a deep link — hand the session token over in
-// the fragment (never sent to any server). Cookie is still set for consent flows.
-function withToken(next: string, token: string) {
-  if (next.startsWith("skill-sync://")) return `${next}#token=${token}`;
-  return next;
+// The session token is a credential — `next` decides where it lands, so an
+// arbitrary URL would leak it (open redirect → token theft). Allowed:
+// skill-sync:// deep links, the server's own origin, and (dev only) localhost.
+function withToken(next: string, token: string, request: Request): Response {
+  if (next.startsWith("skill-sync://")) return redirect(`${next}#token=${token}`);
+  let url: URL;
+  try {
+    url = new URL(next, new URL(request.url).origin);
+  } catch {
+    return page("skill-sync", "<h1>Sign-in failed</h1><p>Invalid redirect target.</p>");
+  }
+  if (url.origin !== new URL(request.url).origin) {
+    const devLocal = ALLOW_DEV_LOGIN && /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(url.origin);
+    const allowlisted = (process.env.ALLOWED_LOGIN_ORIGINS ?? "").split(",").includes(url.origin);
+    if (!devLocal && !allowlisted)
+      return page("skill-sync", `<h1>Blocked</h1><p>Redirect origin not allowed: ${url.origin}. Add it to ALLOWED_LOGIN_ORIGINS.</p>`);
+  }
+  return redirect(`${url}#token=${token}`);
 }
 
 async function discovery(issuer: string) {
@@ -101,7 +114,7 @@ export const authRoutes = () =>
       const token = createSession(user.id);
       audit(user.email, "session.dev_login");
       set.headers["set-cookie"] = sessionCookie(token);
-      return redirect(withToken(next, token));
+      return withToken(next, token, request);
     })
 
     .get("/auth/callback", async ({ request, query, set }) => {
@@ -140,7 +153,7 @@ export const authRoutes = () =>
       const token = createSession(user.id);
       audit(user.email, "session.oidc_login");
       set.headers["set-cookie"] = sessionCookie(token);
-      return redirect(withToken(row.next || "/", token));
+      return withToken(row.next || "/", token, request);
     });
 
 function origin(request: Request) {
